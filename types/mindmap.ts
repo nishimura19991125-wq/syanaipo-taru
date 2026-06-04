@@ -9,6 +9,10 @@ export interface MindMapNode {
   parentId?: string | null
   direction?: NodeDirection
   url?: string
+  /** 横（→←）の派生を非表示 */
+  collapsed?: boolean
+  /** 縦（↑↓）の派生を非表示（写真の分岐リスト用） */
+  collapsedVertical?: boolean
 }
 
 export interface MindMapData {

@@ -9,8 +9,19 @@ const NODE_COLORS = [
 ]
 const NODE_W = 160
 const NODE_H = 44
-const BRANCH_DIST = 220
-const BRANCH_VERT = 110
+/** 親ノードからの出線・子ノードへの入線（すべて統一） */
+const STEM_LEN = 48
+/** 出線と入線のあいだのスパン */
+const H_GAP = 56
+const V_GAP = 56
+/** 兄弟ノードの縦（横）間隔 */
+const SIBLING_GAP = 72
+const BRANCH_DIST = NODE_W + STEM_LEN * 2 + H_GAP
+const BRANCH_VERT = NODE_H + STEM_LEN * 2 + V_GAP
+const LINE_BLUE = '#3B82F6'
+const LINE_BLUE_DARK = '#2563EB'
+const TOGGLE_R = 8
+const TOGGLE_HIT = 22
 
 interface MindMapCanvasProps {
   data: MindMapData
@@ -43,9 +54,190 @@ function getAnchor(node: MindMapNode, side: 'from' | 'to', dir: NodeDirection): 
   }
 }
 
-function nextPosition(parent: MindMapNode, dir: NodeDirection, siblings: MindMapNode[]): { x: number; y: number } {
-  const count = siblings.length
-  const spread = count * 70 - (count * 35)
+function getChildren(nodes: MindMapNode[], parentId: string) {
+  return nodes.filter((n) => n.parentId === parentId)
+}
+
+function isHorizontalDirection(dir?: NodeDirection) {
+  return dir === 'left' || dir === 'right'
+}
+
+function isVerticalDirection(dir?: NodeDirection) {
+  return dir === 'up' || dir === 'down'
+}
+
+function countSubtree(nodes: MindMapNode[], nodeId: string): number {
+  let count = 0
+  const walk = (id: string) => {
+    for (const child of getChildren(nodes, id)) {
+      count += 1
+      walk(child.id)
+    }
+  }
+  walk(nodeId)
+  return count
+}
+
+function countHorizontalSubtree(nodes: MindMapNode[], nodeId: string): number {
+  let count = 0
+  for (const child of getChildren(nodes, nodeId)) {
+    if (isHorizontalDirection(child.direction)) {
+      count += 1 + countSubtree(nodes, child.id)
+    }
+  }
+  return count
+}
+
+function countVerticalSubtree(nodes: MindMapNode[], nodeId: string): number {
+  let count = 0
+  for (const child of getChildren(nodes, nodeId)) {
+    if (isVerticalDirection(child.direction)) {
+      count += 1 + countSubtree(nodes, child.id)
+    }
+  }
+  return count
+}
+
+function hasHorizontalBranch(nodes: MindMapNode[], nodeId: string) {
+  return countHorizontalSubtree(nodes, nodeId) > 0
+}
+
+function hasVerticalBranch(nodes: MindMapNode[], nodeId: string) {
+  return countVerticalSubtree(nodes, nodeId) > 0
+}
+
+function getBranchChildOnPath(
+  nodeId: string,
+  ancestorId: string,
+  nodes: MindMapNode[],
+): MindMapNode | null {
+  let current = nodes.find((n) => n.id === nodeId)
+  if (!current || nodeId === ancestorId) return null
+
+  while (current.parentId && current.parentId !== ancestorId) {
+    const parent = nodes.find((n) => n.id === current!.parentId)
+    if (!parent) return null
+    current = parent
+  }
+  if (!current?.parentId || current.parentId !== ancestorId) return null
+  return current
+}
+
+/** 祖先から見て「横の枝」配下（横→縦の入れ子も含む） */
+function isInHorizontalSubtree(nodeId: string, ancestorId: string, nodes: MindMapNode[]): boolean {
+  const branch = getBranchChildOnPath(nodeId, ancestorId, nodes)
+  return branch ? isHorizontalDirection(branch.direction) : false
+}
+
+/** 祖先から見て「縦の枝」配下（縦→横の入れ子も含む） */
+function isInVerticalSubtree(nodeId: string, ancestorId: string, nodes: MindMapNode[]): boolean {
+  const branch = getBranchChildOnPath(nodeId, ancestorId, nodes)
+  return branch ? isVerticalDirection(branch.direction) : false
+}
+
+/** 写真風: ルート=全体 / 横グループ / 縦グループを個別に切替 */
+function isNodeVisible(node: MindMapNode, nodes: MindMapNode[], rootId: string): boolean {
+  if (node.id === rootId) return true
+
+  const root = nodes.find((n) => n.id === rootId)
+  if (root?.collapsed) return false
+
+  for (const parent of nodes) {
+    if (parent.collapsed && isInHorizontalSubtree(node.id, parent.id, nodes)) return false
+    if (parent.collapsedVertical && isInVerticalSubtree(node.id, parent.id, nodes)) return false
+  }
+  return true
+}
+
+/** 出線スタブの先端（線上トグルの位置） */
+function getStemEnd(parent: MindMapNode, dir: NodeDirection): [number, number] {
+  const [x1, y1] = getAnchor(parent, 'from', dir)
+  if (dir === 'right') return [x1 + STEM_LEN, y1]
+  if (dir === 'left') return [x1 - STEM_LEN, y1]
+  if (dir === 'down') return [x1, y1 + STEM_LEN]
+  return [x1, y1 - STEM_LEN]
+}
+
+function branchCollapsed(
+  parent: MindMapNode,
+  scope: 'horizontal' | 'vertical' | 'all',
+): boolean {
+  if (scope === 'all') return !!parent.collapsed
+  if (scope === 'horizontal') return !!parent.collapsed
+  return !!parent.collapsedVertical
+}
+
+/** 直角の直線（各セグメント長を固定・伸縮しない） */
+function fixedEdgePath(x1: number, y1: number, x2: number, y2: number, dir: NodeDirection): string {
+  if (dir === 'right') {
+    const c1 = x1 + STEM_LEN
+    const c2 = x1 + STEM_LEN + H_GAP
+    if (Math.abs(y1 - y2) < 0.5) {
+      return `M ${x1} ${y1} L ${c1} ${y1} L ${c2} ${y1} L ${x2} ${y2}`
+    }
+    return `M ${x1} ${y1} L ${c1} ${y1} L ${c1} ${y2} L ${x2} ${y2}`
+  }
+  if (dir === 'left') {
+    const c1 = x1 - STEM_LEN
+    const c2 = x1 - STEM_LEN - H_GAP
+    if (Math.abs(y1 - y2) < 0.5) {
+      return `M ${x1} ${y1} L ${c1} ${y1} L ${c2} ${y1} L ${x2} ${y2}`
+    }
+    return `M ${x1} ${y1} L ${c1} ${y1} L ${c1} ${y2} L ${x2} ${y2}`
+  }
+  if (dir === 'down') {
+    const c1 = y1 + STEM_LEN
+    const c2 = y1 + STEM_LEN + V_GAP
+    if (Math.abs(x1 - x2) < 0.5) {
+      return `M ${x1} ${y1} L ${x1} ${c1} L ${x1} ${c2} L ${x2} ${y2}`
+    }
+    return `M ${x1} ${y1} L ${x1} ${c1} L ${x2} ${c1} L ${x2} ${y2}`
+  }
+  const c1 = y1 - STEM_LEN
+  const c2 = y1 - STEM_LEN - V_GAP
+  if (Math.abs(x1 - x2) < 0.5) {
+    return `M ${x1} ${y1} L ${x1} ${c1} L ${x1} ${c2} L ${x2} ${y2}`
+  }
+  return `M ${x1} ${y1} L ${x1} ${c1} L ${x2} ${c1} L ${x2} ${y2}`
+}
+
+/** ルート位置を保ちつつ全ノードを固定間隔で再配置 */
+function relayoutTree(nodes: MindMapNode[], rootId: string): MindMapNode[] {
+  const map = new Map(nodes.map((n) => [n.id, { ...n }]))
+  const root = map.get(rootId)
+  if (!root) return nodes
+
+  const layoutChildren = (parentId: string) => {
+    const parent = map.get(parentId)!
+    const children = nodes.filter((n) => n.parentId === parentId)
+    const byDir = new Map<NodeDirection, MindMapNode[]>()
+
+    for (const child of children) {
+      const dir = child.direction ?? 'right'
+      if (!byDir.has(dir)) byDir.set(dir, [])
+      byDir.get(dir)!.push(child)
+    }
+
+    for (const [dir, group] of byDir) {
+      const sorted = [...group].sort((a, b) => {
+        if (dir === 'right' || dir === 'left') return a.y - b.y
+        return a.x - b.x
+      })
+      sorted.forEach((child, index) => {
+        const before = sorted.slice(0, index)
+        const pos = nextPosition(parent, dir, before)
+        map.set(child.id, { ...map.get(child.id)!, x: pos.x, y: pos.y })
+        layoutChildren(child.id)
+      })
+    }
+  }
+
+  layoutChildren(rootId)
+  return nodes.map((n) => map.get(n.id)!)
+}
+
+function nextPosition(parent: MindMapNode, dir: NodeDirection, siblingsBefore: MindMapNode[]): { x: number; y: number } {
+  const spread = siblingsBefore.length * (SIBLING_GAP / 2)
   if (dir === 'right') return { x: parent.x + BRANCH_DIST, y: parent.y + spread }
   if (dir === 'left') return { x: parent.x - BRANCH_DIST, y: parent.y + spread }
   if (dir === 'up') return { x: parent.x + spread, y: parent.y - BRANCH_VERT }
@@ -70,7 +262,18 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
   const editRef = useRef<HTMLInputElement>(null)
   const urlRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => { setNodes(data.nodes) }, [data])
+  useEffect(() => {
+    setNodes(relayoutTree(data.nodes, data.rootId))
+  }, [data])
+
+  useEffect(() => {
+    if (!selectedId) return
+    const visible = nodes.filter((n) => isNodeVisible(n, nodes, rootId))
+    if (!visible.some((n) => n.id === selectedId)) {
+      setSelectedId(null)
+      setAddDirNode(null)
+    }
+  }, [nodes, selectedId, rootId])
 
   const notifyChange = useCallback((updated: MindMapNode[]) => {
     onChange?.({ nodes: updated, rootId })
@@ -91,7 +294,7 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
       parentId,
       direction: dir,
     }
-    const updated = [...nodes, newNode]
+    const updated = relayoutTree([...nodes, newNode], rootId)
     setNodes(updated)
     notifyChange(updated)
     setAddDirNode(null)
@@ -100,6 +303,18 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
     setSelectedId(newId)
   }, [nodes, readOnly, notifyChange])
 
+  const toggleCollapse = useCallback((nodeId: string, scope: 'all' | 'horizontal' | 'vertical') => {
+    const updated = nodes.map((n) => {
+      if (n.id !== nodeId) return n
+      if (scope === 'all') return { ...n, collapsed: !n.collapsed }
+      if (scope === 'horizontal') return { ...n, collapsed: !n.collapsed }
+      return { ...n, collapsedVertical: !n.collapsedVertical }
+    })
+    const laid = relayoutTree(updated, rootId)
+    setNodes(laid)
+    notifyChange(laid)
+  }, [nodes, rootId, notifyChange])
+
   const deleteNode = useCallback((nodeId: string) => {
     if (readOnly || nodeId === rootId) return
     const collect = (id: string): string[] => {
@@ -107,7 +322,7 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
       return [id, ...kids.flatMap(collect)]
     }
     const toDelete = new Set(collect(nodeId))
-    const updated = nodes.filter((n) => !toDelete.has(n.id))
+    const updated = relayoutTree(nodes.filter((n) => !toDelete.has(n.id)), rootId)
     setNodes(updated)
     notifyChange(updated)
     setSelectedId(null)
@@ -138,9 +353,11 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
 
   const handleMouseDown = (e: React.MouseEvent, nodeId: string) => {
     if (editingId || editingUrlId) return
+    if ((e.target as Element).closest('.node-control')) return
     e.stopPropagation()
     setSelectedId(nodeId)
     setAddDirNode(null)
+    if (readOnly || nodeId !== rootId) return
     const node = nodes.find((n) => n.id === nodeId)!
     setDrag({ nodeId, startX: e.clientX, startY: e.clientY, originX: node.x, originY: node.y })
   }
@@ -159,13 +376,16 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
     if (drag) {
       const dx = (e.clientX - drag.startX) / scale
       const dy = (e.clientY - drag.startY) / scale
-      setNodes((prev) => prev.map((n) =>
-        n.id === drag.nodeId ? { ...n, x: drag.originX + dx, y: drag.originY + dy } : n
+      setNodes((prev) => relayoutTree(
+        prev.map((n) =>
+          n.id === drag.nodeId ? { ...n, x: drag.originX + dx, y: drag.originY + dy } : n
+        ),
+        rootId,
       ))
     } else if (panStart) {
       setOffset({ x: panOrigin.x + (e.clientX - panStart.x), y: panOrigin.y + (e.clientY - panStart.y) })
     }
-  }, [drag, panStart, panOrigin, scale])
+  }, [drag, panStart, panOrigin, scale, rootId])
 
   const handleMouseUp = useCallback(() => {
     if (drag) notifyChange(nodes)
@@ -181,61 +401,264 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
   const renderEdge = (child: MindMapNode) => {
     const parent = nodes.find((p) => p.id === child.parentId)
     if (!parent) return null
+    if (!isNodeVisible(child, nodes, rootId) || !isNodeVisible(parent, nodes, rootId)) {
+      return null
+    }
     const dir = child.direction ?? 'right'
     const [x1, y1] = getAnchor(parent, 'from', dir)
     const [x2, y2] = getAnchor(child, 'to', dir)
-    let d: string
-    if (dir === 'right' || dir === 'left') {
-      const mx = (x1 + x2) / 2
-      d = `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`
-    } else {
-      const my = (y1 + y2) / 2
-      d = `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`
-    }
+    const d = fixedEdgePath(x1, y1, x2, y2, dir)
     return (
       <path
         key={`edge-${parent.id}-${child.id}`}
         d={d}
         fill="none"
-        stroke={child.color || '#4F46E5'}
-        strokeWidth="2"
-        strokeOpacity="0.5"
+        stroke={LINE_BLUE}
+        strokeWidth={2.5}
+        strokeOpacity={0.9}
+        strokeLinejoin="round"
       />
     )
   }
 
-  const renderDirPicker = (node: MindMapNode) => {
-    const w = NODE_W
-    const h = NODE_H
-    const dirs: { dir: NodeDirection; label: string; tx: number; ty: number }[] = [
-      { dir: 'right', label: '→', tx: w + 34, ty: h / 2 - 12 },
-      { dir: 'left',  label: '←', tx: -58,    ty: h / 2 - 12 },
-      { dir: 'up',    label: '↑', tx: w / 2 - 12, ty: -34 },
-      { dir: 'down',  label: '↓', tx: w / 2 - 12, ty: h + 10 },
-    ]
-    return dirs.map(({ dir, label, tx, ty }) => (
-      <g
-        key={dir}
-        transform={`translate(${tx}, ${ty})`}
-        onClick={(e) => { e.stopPropagation(); addNode(node.id, dir) }}
-        style={{ cursor: 'pointer' }}
-      >
-        <rect width={24} height={24} rx={6} fill="#16A34A" />
-        <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill="white" fontSize={13} fontWeight="bold">{label}</text>
+  const stopPointer = (e: React.SyntheticEvent) => e.stopPropagation()
+
+  const renderActionButton = (
+    key: string,
+    transform: string,
+    onActivate: () => void,
+    renderShape: () => React.ReactNode,
+    size = 24,
+  ) => (
+    <g
+      key={key}
+      transform={transform}
+      className="node-control"
+      onMouseDown={stopPointer}
+      onPointerDown={stopPointer}
+      onTouchStart={stopPointer}
+      onClick={(e) => { stopPointer(e); onActivate() }}
+      style={{ cursor: 'pointer' }}
+    >
+      <rect
+        x={-4}
+        y={-4}
+        width={size + 8}
+        height={size + 8}
+        fill="transparent"
+        pointerEvents="all"
+      />
+      {renderShape()}
+    </g>
+  )
+
+  /** 写真風: 展開時=中空リング / 折りたたみ時=ルートのみ実心+ */
+  const renderLineToggle = (
+    key: string,
+    x: number,
+    y: number,
+    collapsed: boolean,
+    isRoot: boolean,
+    title: string,
+    onClick: () => void,
+  ) => (
+    <g
+      key={key}
+      className="node-control"
+      transform={`translate(${x}, ${y})`}
+      onMouseDown={stopPointer}
+      onPointerDown={stopPointer}
+      onTouchStart={stopPointer}
+      onClick={(e) => { stopPointer(e); onClick() }}
+      style={{ cursor: 'pointer' }}
+    >
+      <title>{title}</title>
+      <rect
+        x={-TOGGLE_HIT / 2}
+        y={-TOGGLE_HIT / 2}
+        width={TOGGLE_HIT}
+        height={TOGGLE_HIT}
+        fill="transparent"
+        pointerEvents="all"
+      />
+      {collapsed && isRoot ? (
+        <>
+          <circle r={TOGGLE_R} fill={LINE_BLUE_DARK} stroke={LINE_BLUE_DARK} strokeWidth={2} pointerEvents="none" />
+          <text
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fill="white"
+            fontSize={13}
+            fontWeight="600"
+            pointerEvents="none"
+          >
+            +
+          </text>
+        </>
+      ) : (
+        <>
+          <circle r={TOGGLE_R} fill="white" stroke={LINE_BLUE} strokeWidth={2.5} pointerEvents="none" />
+          <circle r={2.5} fill={LINE_BLUE} pointerEvents="none" />
+        </>
+      )}
+    </g>
+  )
+
+  const renderBranchToggles = () => {
+    if (readOnly) return null
+    const toggles: React.ReactNode[] = []
+
+    const root = nodes.find((n) => n.id === rootId)
+    if (root && getChildren(nodes, rootId).length > 0) {
+      const firstChild = getChildren(nodes, rootId)[0]
+      const dir = firstChild.direction ?? 'right'
+      const [jx, jy] = getStemEnd(root, dir)
+      const collapsed = branchCollapsed(root, 'all')
+      const count = countHorizontalSubtree(nodes, root.id) + countVerticalSubtree(nodes, root.id)
+      toggles.push(renderLineToggle(
+        `toggle-${root.id}-all`,
+        jx,
+        jy,
+        collapsed,
+        true,
+        collapsed ? `${count}件を表示` : 'すべての枝を非表示',
+        () => toggleCollapse(root.id, 'all'),
+      ))
+    }
+
+    for (const parent of nodes) {
+      if (parent.id === rootId) continue
+      if (!isNodeVisible(parent, nodes, rootId)) continue
+
+      const children = getChildren(nodes, parent.id)
+      const firstH = children.find((c) => isHorizontalDirection(c.direction))
+      const firstV = children.find((c) => isVerticalDirection(c.direction))
+
+      if (hasHorizontalBranch(nodes, parent.id) && firstH) {
+        const dir = firstH.direction ?? 'right'
+        const [jx, jy] = getStemEnd(parent, dir)
+        const collapsed = branchCollapsed(parent, 'horizontal')
+        const count = countHorizontalSubtree(nodes, parent.id)
+        toggles.push(renderLineToggle(
+          `toggle-${parent.id}-h`,
+          jx,
+          jy,
+          collapsed,
+          false,
+          collapsed ? `横の枝${count}件を表示` : '横の枝を非表示',
+          () => toggleCollapse(parent.id, 'horizontal'),
+        ))
+      }
+      if (hasVerticalBranch(nodes, parent.id) && firstV) {
+        const dir = firstV.direction ?? 'down'
+        const [jx, jy] = getStemEnd(parent, dir)
+        const collapsed = branchCollapsed(parent, 'vertical')
+        const count = countVerticalSubtree(nodes, parent.id)
+        toggles.push(renderLineToggle(
+          `toggle-${parent.id}-v`,
+          jx,
+          jy,
+          collapsed,
+          false,
+          collapsed ? `縦の枝${count}件を表示` : '縦の枝を非表示',
+          () => toggleCollapse(parent.id, 'vertical'),
+        ))
+      }
+    }
+
+    return toggles
+  }
+
+  const renderSelectionAddHandle = () => {
+    if (readOnly || !selectedId) return null
+    const node = nodes.find((n) => n.id === selectedId)
+    if (!node || !isNodeVisible(node, nodes, rootId)) return null
+
+    const dir: NodeDirection = 'right'
+    const [x1, y1] = getAnchor(node, 'from', dir)
+    const [jx, jy] = getStemEnd(node, dir)
+    const isShowingDirs = addDirNode === node.id
+
+    return (
+      <g key={`add-${node.id}`}>
+        <line
+          x1={x1}
+          y1={y1}
+          x2={jx}
+          y2={jy}
+          stroke={LINE_BLUE}
+          strokeWidth={2.5}
+          strokeOpacity={0.7}
+          strokeDasharray={isShowingDirs ? undefined : '4 3'}
+        />
+        <g
+          className="node-control"
+          transform={`translate(${jx}, ${jy})`}
+          onMouseDown={stopPointer}
+          onPointerDown={stopPointer}
+          onTouchStart={stopPointer}
+          onClick={(e) => { stopPointer(e); setAddDirNode(isShowingDirs ? null : node.id) }}
+          style={{ cursor: 'pointer' }}
+        >
+          <title>子トピックを追加</title>
+          <rect
+            x={-TOGGLE_HIT / 2}
+            y={-TOGGLE_HIT / 2}
+            width={TOGGLE_HIT}
+            height={TOGGLE_HIT}
+            fill="transparent"
+            pointerEvents="all"
+          />
+          <circle
+            r={TOGGLE_R}
+            fill={isShowingDirs ? LINE_BLUE : 'white'}
+            stroke={LINE_BLUE}
+            strokeWidth={2.5}
+            pointerEvents="none"
+          />
+          {isShowingDirs && (
+            <circle r={2.5} fill="white" pointerEvents="none" />
+          )}
+        </g>
+        {isShowingDirs && (
+          <g transform={`translate(${jx}, ${jy})`}>
+            {renderDirPickerAt(node, dir)}
+          </g>
+        )}
       </g>
-    ))
+    )
+  }
+
+  const renderDirPickerAt = (node: MindMapNode, _originDir: NodeDirection) => {
+    const dirs: { dir: NodeDirection; label: string; ox: number; oy: number }[] = [
+      { dir: 'right', label: '→', ox: 36, oy: 0 },
+      { dir: 'left', label: '←', ox: -36, oy: 0 },
+      { dir: 'up', label: '↑', ox: 0, oy: -36 },
+      { dir: 'down', label: '↓', ox: 0, oy: 36 },
+    ]
+    return dirs.map(({ dir, label, ox, oy }) =>
+        renderActionButton(
+          `dir-${dir}`,
+          `translate(${ox - 12}, ${oy - 12})`,
+          () => addNode(node.id, dir),
+          () => (
+            <>
+              <circle cx={12} cy={12} r={12} fill="white" stroke={LINE_BLUE} strokeWidth={2} pointerEvents="none" />
+              <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill={LINE_BLUE} fontSize={13} fontWeight="bold" pointerEvents="none">{label}</text>
+            </>
+          ),
+        )
+      )
   }
 
   const renderNode = (node: MindMapNode) => {
     const isSelected = selectedId === node.id
     const isEditing = editingId === node.id
     const isEditingUrl = editingUrlId === node.id
-    const isShowingDirs = addDirNode === node.id
     const isRoot = node.id === rootId
     const w = NODE_W
     const h = NODE_H
     const hasUrl = !!node.url
-
     return (
       <g
         key={node.id}
@@ -248,7 +671,11 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
           setEditText(node.text)
           setTimeout(() => editRef.current?.select(), 0)
         }}
-        style={{ cursor: drag?.nodeId === node.id ? 'grabbing' : (readOnly ? 'default' : 'grab') }}
+        style={{
+          cursor: drag?.nodeId === node.id
+            ? 'grabbing'
+            : (readOnly || !isRoot ? 'default' : 'grab'),
+        }}
       >
         <rect
           width={w}
@@ -332,68 +759,57 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
         {/* Action buttons when selected */}
         {isSelected && !readOnly && !isEditing && !isEditingUrl && (
           <>
-            {/* Edit text */}
-            <g
-              transform={`translate(-28, ${h / 2 - 12})`}
-              onClick={(e) => {
-                e.stopPropagation()
+            {renderActionButton(
+              'edit',
+              `translate(-28, ${h / 2 - 12})`,
+              () => {
                 setEditingId(node.id)
                 setEditText(node.text)
                 setTimeout(() => editRef.current?.select(), 0)
-              }}
-              style={{ cursor: 'pointer' }}
-            >
-              <circle cx={12} cy={12} r={12} fill="#2563EB" />
-              <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill="white" fontSize={11}>✏</text>
-            </g>
+              },
+              () => (
+                <>
+                  <circle cx={12} cy={12} r={12} fill="#2563EB" pointerEvents="none" />
+                  <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill="white" fontSize={11} pointerEvents="none">✏</text>
+                </>
+              ),
+            )}
 
-            {/* Add URL link */}
-            <g
-              transform={`translate(-28, ${h / 2 + 14})`}
-              onClick={(e) => {
-                e.stopPropagation()
+            {renderActionButton(
+              'link',
+              `translate(-28, ${h / 2 + 14})`,
+              () => {
                 setEditingUrlId(node.id)
                 setEditUrl(node.url ?? '')
                 setTimeout(() => urlRef.current?.focus(), 0)
-              }}
-              style={{ cursor: 'pointer' }}
-            >
-              <circle cx={12} cy={12} r={12} fill={hasUrl ? '#D97706' : '#64748B'} />
-              <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill="white" fontSize={10}>🔗</text>
-            </g>
-
-            {/* Add child: toggle direction picker */}
-            <g
-              transform={`translate(${w + 4}, ${h / 2 - 12})`}
-              onClick={(e) => {
-                e.stopPropagation()
-                setAddDirNode(isShowingDirs ? null : node.id)
-              }}
-              style={{ cursor: 'pointer' }}
-            >
-              <circle cx={12} cy={12} r={12} fill={isShowingDirs ? '#059669' : '#16A34A'} />
-              <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill="white" fontSize={16} fontWeight="bold">+</text>
-            </g>
-
-            {/* Delete */}
-            {node.id !== rootId && (
-              <g
-                transform={`translate(${w + 4}, ${h / 2 + 14})`}
-                onClick={(e) => { e.stopPropagation(); deleteNode(node.id) }}
-                style={{ cursor: 'pointer' }}
-              >
-                <circle cx={12} cy={12} r={12} fill="#DC2626" />
-                <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill="white" fontSize={14}>×</text>
-              </g>
+              },
+              () => (
+                <>
+                  <circle cx={12} cy={12} r={12} fill={hasUrl ? '#D97706' : '#64748B'} pointerEvents="none" />
+                  <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill="white" fontSize={10} pointerEvents="none">🔗</text>
+                </>
+              ),
             )}
 
-            {/* Direction picker */}
-            {isShowingDirs && renderDirPicker(node)}
+            {node.id !== rootId && renderActionButton(
+              'delete',
+              `translate(${w + 4}, ${h / 2 + 14})`,
+              () => deleteNode(node.id),
+              () => (
+                <>
+                  <circle cx={12} cy={12} r={12} fill="#DC2626" pointerEvents="none" />
+                  <text x={12} y={12} textAnchor="middle" dominantBaseline="middle" fill="white" fontSize={14} pointerEvents="none">×</text>
+                </>
+              ),
+            )}
+
           </>
         )}
       </g>
     )
   }
+
+  const visibleNodes = nodes.filter((n) => isNodeVisible(n, nodes, rootId))
 
   const edges = nodes
     .filter((n) => n.parentId)
@@ -420,7 +836,9 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
         <rect width="100%" height="100%" fill="url(#grid)" />
         <g transform={`translate(${offset.x}, ${offset.y}) scale(${scale})`}>
           {edges}
-          {nodes.map(renderNode)}
+          {visibleNodes.map(renderNode)}
+          {renderBranchToggles()}
+          {renderSelectionAddHandle()}
         </g>
       </svg>
 
@@ -439,8 +857,8 @@ export function MindMapCanvas({ data, onChange, readOnly }: MindMapCanvasProps) 
       {!readOnly && (
         <div className="absolute top-4 left-4 text-xs text-gray-400 bg-white/90 rounded-lg px-3 py-1.5 shadow-sm">
           <span className="font-medium text-gray-500">操作：</span>
-          {' '}ダブルクリックで編集 · ドラッグで移動 · スクロールでズーム
-          {' '}· +ボタンで方向を選んで子ノード追加 · 🔗でURLリンク設定
+          {' '}ダブルクリックで編集 · ルートをドラッグで移動 · スクロールでズーム
+          {' '}· 線上の青リングで枝の表示切替 · リングをクリックで子追加
         </div>
       )}
 
