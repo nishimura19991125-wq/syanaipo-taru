@@ -1,5 +1,5 @@
 import { cookies } from 'next/headers'
-import { prisma } from './prisma'
+import { sessions, users } from './db'
 
 export type SessionUser = {
   id: string
@@ -13,32 +13,28 @@ export async function getSession(): Promise<SessionUser | null> {
   const token = cookieStore.get('session_token')?.value
   if (!token) return null
 
-  const session = await prisma.session.findUnique({
-    where: { token },
-    include: { user: { select: { id: true, name: true, email: true, role: true } } },
-  })
-
+  const session = await sessions.findByToken(token)
   if (!session) return null
-  if (session.expiresAt < new Date()) {
-    await prisma.session.delete({ where: { token } })
+
+  if (new Date(session.expiresAt) < new Date()) {
+    await sessions.deleteByToken(token)
     return null
   }
 
-  return session.user
+  const user = await users.findById(session.userId)
+  if (!user) return null
+
+  return { id: user.id, name: user.name, email: user.email, role: user.role }
 }
 
 export async function requireAuth(): Promise<SessionUser> {
   const user = await getSession()
-  if (!user) {
-    throw new Error('Unauthorized')
-  }
+  if (!user) throw new Error('Unauthorized')
   return user
 }
 
 export async function requireAdmin(): Promise<SessionUser> {
   const user = await requireAuth()
-  if (user.role !== 'admin') {
-    throw new Error('Forbidden')
-  }
+  if (user.role !== 'admin') throw new Error('Forbidden')
   return user
 }

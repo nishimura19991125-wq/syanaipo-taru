@@ -1,4 +1,4 @@
-import { prisma } from '@/lib/prisma'
+import { announcements, users } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { sanitizeString } from '@/lib/sanitize'
 
@@ -6,12 +6,19 @@ export async function GET() {
   const user = await getSession()
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const announcements = await prisma.announcement.findMany({
-    include: { author: { select: { name: true } } },
-    orderBy: [{ pinned: 'desc' }, { createdAt: 'desc' }],
-  })
+  const list = await announcements.findAll()
 
-  return Response.json({ announcements })
+  // Batch-fetch author names
+  const authorIds = [...new Set(list.map((a) => a.authorId))]
+  const authorList = await users.findManyByIds(authorIds)
+  const authorMap = new Map(authorList.map((u) => [u.id, u]))
+
+  const result = list.map((a) => ({
+    ...a,
+    author: { name: authorMap.get(a.authorId)?.name ?? null },
+  }))
+
+  return Response.json({ announcements: result })
 }
 
 export async function POST(request: Request) {
@@ -34,10 +41,11 @@ export async function POST(request: Request) {
     return Response.json({ error: 'タイトルと内容を入力してください' }, { status: 400 })
   }
 
-  const announcement = await prisma.announcement.create({
-    data: { title, content, pinned: Boolean(raw?.pinned), authorId: user.id },
-    include: { author: { select: { name: true } } },
+  const announcement = await announcements.create({
+    title, content, pinned: Boolean(raw?.pinned), authorId: user.id,
   })
 
-  return Response.json({ announcement }, { status: 201 })
+  return Response.json({
+    announcement: { ...announcement, author: { name: user.name } },
+  }, { status: 201 })
 }

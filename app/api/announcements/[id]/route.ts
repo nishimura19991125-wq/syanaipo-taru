@@ -1,4 +1,4 @@
-import { prisma } from '@/lib/prisma'
+import { announcements } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { sanitizeString } from '@/lib/sanitize'
 
@@ -27,13 +27,10 @@ export async function PUT(
     return Response.json({ error: 'タイトルと内容を入力してください' }, { status: 400 })
   }
 
-  const announcement = await prisma.announcement.update({
-    where: { id },
-    data: { title, content, pinned: Boolean(raw?.pinned) },
-    include: { author: { select: { name: true } } },
+  const announcement = await announcements.update(id, { title, content, pinned: Boolean(raw?.pinned) })
+  return Response.json({
+    announcement: { ...announcement, author: { name: user.name } },
   })
-
-  return Response.json({ announcement })
 }
 
 export async function DELETE(
@@ -45,6 +42,6 @@ export async function DELETE(
   if (user.role !== 'admin') return Response.json({ error: 'Forbidden' }, { status: 403 })
 
   const { id } = await params
-  await prisma.announcement.delete({ where: { id } })
+  await announcements.delete(id)
   return Response.json({ ok: true })
 }
