@@ -54,14 +54,16 @@ export async function PUT(
   const body = await request.json()
   const updateData: Record<string, unknown> = {}
 
+  const { sanitizeString } = await import('@/lib/sanitize')
   if (body.title !== undefined) {
-    if (!body.title?.trim()) {
+    const title = sanitizeString(body.title, 200).trim()
+    if (!title) {
       return Response.json({ error: 'タイトルを入力してください' }, { status: 400 })
     }
-    updateData.title = body.title.trim()
+    updateData.title = title
   }
   if (body.description !== undefined) {
-    updateData.description = body.description?.trim() || null
+    updateData.description = sanitizeString(body.description, 2000).trim() || null
   }
   if (body.startAt !== undefined) {
     const start = new Date(body.startAt)
@@ -82,7 +84,13 @@ export async function PUT(
     }
   }
   if (body.allDay !== undefined) updateData.allDay = Boolean(body.allDay)
-  if (body.color !== undefined) updateData.color = body.color
+  if (body.color !== undefined) {
+    // Accept only valid CSS hex colors (#rrggbb or #rgb)
+    const color = String(body.color)
+    if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color)) {
+      updateData.color = color
+    }
+  }
   const VALID_CATEGORIES = ['meeting', 'deadline', 'task', 'personal', 'holiday', 'construction', 'other']
   const VALID_RECURRENCES = ['none', 'daily', 'weekly', 'monthly', 'yearly']
   if (body.category !== undefined && VALID_CATEGORIES.includes(body.category as string)) {

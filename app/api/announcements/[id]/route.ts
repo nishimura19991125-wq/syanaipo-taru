@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getSession } from '@/lib/auth'
+import { sanitizeString } from '@/lib/sanitize'
 
 export async function PUT(
   request: Request,
@@ -10,11 +11,25 @@ export async function PUT(
   if (user.role !== 'admin') return Response.json({ error: 'Forbidden' }, { status: 403 })
 
   const { id } = await params
-  const { title, content, pinned } = await request.json()
+
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return Response.json({ error: 'リクエスト形式が不正です' }, { status: 400 })
+  }
+
+  const raw = body as Record<string, unknown>
+  const title = sanitizeString(raw?.title, 200).trim()
+  const content = sanitizeString(raw?.content, 10000).trim()
+
+  if (!title || !content) {
+    return Response.json({ error: 'タイトルと内容を入力してください' }, { status: 400 })
+  }
 
   const announcement = await prisma.announcement.update({
     where: { id },
-    data: { title, content, pinned },
+    data: { title, content, pinned: Boolean(raw?.pinned) },
     include: { author: { select: { name: true } } },
   })
 

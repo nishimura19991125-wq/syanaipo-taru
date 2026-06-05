@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft, Share2, Users, Globe, Lock } from 'lucide-react'
-import { io, Socket } from 'socket.io-client'
+import type { Channel } from 'pusher-js'
+import { getPusherClient } from '@/lib/pusher-client'
 import { MindMapCanvas } from '@/components/mindmap/MindMapCanvas'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
@@ -40,7 +41,7 @@ export default function MindMapEditorPage() {
   const [sharePermission, setSharePermission] = useState<'view' | 'edit'>('edit')
   const [sharing, setSharing] = useState(false)
   const [shareError, setShareError] = useState('')
-  const socketRef = useRef<Socket | null>(null)
+  const channelRef = useRef<Channel | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isRemoteUpdate = useRef(false)
 
@@ -62,28 +63,39 @@ export default function MindMapEditorPage() {
   useEffect(() => {
     if (!user || !id) return
 
-    const socket = io('/', {
-      query: {
-        mindMapId: id,
-        userId: user.id,
-        userName: user.name || user.email,
-      },
-    })
+    const pusher = getPusherClient()
+    const channel = pusher.subscribe(`presence-mindmap-${id}`)
+    channelRef.current = channel
 
-    socket.on('users_updated', (users: ActiveUser[]) => {
+    channel.bind('pusher:subscription_succeeded', (members: {
+      count: number
+      members: Record<string, { name: string }>
+      me: { id: string; info: { name: string } }
+    }) => {
+      const users: ActiveUser[] = Object.entries(members.members).map(([uid, info]) => ({
+        userId: uid,
+        name: info.name,
+      }))
       setActiveUsers(users)
     })
 
-    socket.on('map_update', (newData: MindMapData) => {
+    channel.bind('pusher:member_added', (member: { id: string; info: { name: string } }) => {
+      setActiveUsers((prev) => [...prev, { userId: member.id, name: member.info.name }])
+    })
+
+    channel.bind('pusher:member_removed', (member: { id: string }) => {
+      setActiveUsers((prev) => prev.filter((u) => u.userId !== member.id))
+    })
+
+    channel.bind('map_update', (newData: MindMapData) => {
       isRemoteUpdate.current = true
       setData(newData)
       setTimeout(() => { isRemoteUpdate.current = false }, 0)
     })
 
-    socketRef.current = socket
-
     return () => {
-      socket.disconnect()
+      pusher.unsubscribe(`presence-mindmap-${id}`)
+      channelRef.current = null
     }
   }, [id, user])
 
@@ -91,8 +103,16 @@ export default function MindMapEditorPage() {
     (newData: MindMapData) => {
       if (readOnly) return
 
-      if (!isRemoteUpdate.current && socketRef.current) {
-        socketRef.current.emit('map_update', newData)
+      if (!isRemoteUpdate.current) {
+        const pusher = getPusherClient()
+        fetch('/api/pusher/event', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-socket-id': pusher.connection.socket_id ?? '',
+          },
+          body: JSON.stringify({ mindMapId: id, data: newData }),
+        })
       }
 
       if (saveTimer.current) clearTimeout(saveTimer.current)

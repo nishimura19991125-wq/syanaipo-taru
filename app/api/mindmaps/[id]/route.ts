@@ -54,10 +54,21 @@ export async function PUT(
   const updateData: Record<string, unknown> = {}
 
   if (body.data !== undefined) {
-    // Validate JSON structure and sanitize node URLs
+    // Enforce payload size limit before parsing (prevent memory DoS)
+    const raw = body.data as string
+    if (typeof raw !== 'string' || raw.length > 500_000) {
+      return Response.json({ error: 'データが大きすぎます（上限500KB）' }, { status: 413 })
+    }
     try {
-      const parsed = JSON.parse(body.data as string)
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object' || !parsed.rootId) {
+        return Response.json({ error: 'データ形式が不正です' }, { status: 400 })
+      }
       if (parsed.nodes && Array.isArray(parsed.nodes)) {
+        // Cap node count to prevent DB bloat / DoS
+        if (parsed.nodes.length > 500) {
+          return Response.json({ error: 'ノード数が上限（500）を超えています' }, { status: 400 })
+        }
         parsed.nodes = parsed.nodes.map((n: Record<string, unknown>) => ({
           ...n,
           text: sanitizeString(n.text, 200),

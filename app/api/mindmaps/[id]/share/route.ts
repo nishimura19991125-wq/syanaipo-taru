@@ -38,6 +38,9 @@ export async function POST(
   const { email, permission } = await request.json()
   if (!email) return Response.json({ error: 'メールアドレスを入力してください' }, { status: 400 })
 
+  // Validate permission to prevent arbitrary values being stored
+  const safePermission = permission === 'edit' ? 'edit' : 'view'
+
   const targetUser = await prisma.user.findUnique({ where: { email } })
   if (!targetUser) return Response.json({ error: 'ユーザーが見つかりません' }, { status: 404 })
   if (targetUser.id === user.id) {
@@ -46,8 +49,8 @@ export async function POST(
 
   const share = await prisma.mindMapShare.upsert({
     where: { mindMapId_userId: { mindMapId: id, userId: targetUser.id } },
-    update: { permission: permission || 'view' },
-    create: { mindMapId: id, userId: targetUser.id, permission: permission || 'view' },
+    update: { permission: safePermission },
+    create: { mindMapId: id, userId: targetUser.id, permission: safePermission },
     include: { user: { select: { id: true, name: true, email: true } } },
   })
 

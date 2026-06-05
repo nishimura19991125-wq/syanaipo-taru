@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { getSession } from '@/lib/auth'
+import { sanitizeString } from '@/lib/sanitize'
 
 export async function GET() {
   const user = await getSession()
@@ -51,7 +52,14 @@ export async function POST(request: Request) {
   const user = await getSession()
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { title } = await request.json()
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return Response.json({ error: 'リクエスト形式が不正です' }, { status: 400 })
+  }
+
+  const title = sanitizeString((body as Record<string, unknown>)?.title, 200).trim()
   if (!title) return Response.json({ error: 'タイトルを入力してください' }, { status: 400 })
 
   const rootId = 'root-' + Date.now()

@@ -1,16 +1,10 @@
-// Simple in-memory rate limiter (single-process; for multi-process use Redis)
+// Simple in-memory rate limiter (best-effort on serverless; use Redis for accuracy)
 interface RateLimitEntry {
   count: number
   resetAt: number
 }
 
 const store = new Map<string, RateLimitEntry>()
-
-// Purge old entries every 5 minutes
-setInterval(() => {
-  const now = Date.now()
-  store.forEach((v, k) => { if (v.resetAt < now) store.delete(k) })
-}, 5 * 60 * 1000)
 
 export function checkRateLimit(
   key: string,

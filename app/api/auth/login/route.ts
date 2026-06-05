@@ -29,11 +29,12 @@ export async function POST(request: Request) {
   }
 
   const user = await prisma.user.findUnique({ where: { email } })
-  // Always compare hash to prevent timing attacks
-  const dummyHash = '$2b$12$invalidhashinvalidhashinvali'
-  const valid = user
-    ? await bcrypt.compare(password, user.password)
-    : await bcrypt.compare(password, dummyHash).then(() => false)
+  // Always run bcrypt to prevent user-enumeration via timing differences.
+  // The dummy hash is a valid bcrypt hash so the full computation runs even for unknown emails.
+  const DUMMY_HASH = '$2b$12$WwsdfLJ18snLGXKu7E4K7eZLaU2EGDlqaFLLIjNV6yVYSBMgC91fC'
+  const hashToCompare = user ? user.password : DUMMY_HASH
+  const matched = await bcrypt.compare(password, hashToCompare)
+  const valid = user ? matched : false
 
   if (!user || !valid) {
     return Response.json({ error: 'メールアドレスまたはパスワードが正しくありません' }, { status: 401 })

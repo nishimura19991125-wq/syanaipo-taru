@@ -192,7 +192,8 @@ export async function POST(request: Request) {
 
   const validCategory = VALID_CATEGORIES.includes(category as string) ? (category as string) : 'other'
   const validRecurrence = VALID_RECURRENCES.includes(recurrence as string) ? (recurrence as string) : 'none'
-  const eventColor = (color as string) || EVENT_CATEGORY_COLORS[validCategory as keyof typeof EVENT_CATEGORY_COLORS] || '#4F46E5'
+  const colorStr = typeof color === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color) ? color : null
+  const eventColor = colorStr || EVENT_CATEGORY_COLORS[validCategory as keyof typeof EVENT_CATEGORY_COLORS] || '#4F46E5'
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const event = await (prisma as any).calendarEvent.create({
